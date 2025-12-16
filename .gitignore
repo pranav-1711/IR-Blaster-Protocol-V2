@@ -1,8 +1,5 @@
-.vscode
-
-/build
-/libs
-
-*.o
-*.d
-*.a
+*.hex
+*.elf
+.build/
+.vscode/
+.idea/
