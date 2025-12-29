@@ -29,10 +29,10 @@ docs/
 └── future-enhancements.md
 
 firmware/
-└── arduino-uno/
-├── include/
-├── src/
-└── test/
+├── test/
+└── arduino-uno/src/
+   └── IR_Protocol_RX
+   └── IR_Protocol_TX
 ```
 
 ## 🧠 How It Works
