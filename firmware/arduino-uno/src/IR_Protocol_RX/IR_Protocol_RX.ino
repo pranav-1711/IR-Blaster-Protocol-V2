@@ -1,118 +1,119 @@
-/*
-  IR-Blaster-Protocol-V2.0
-  Receiver Firmware (RX)
+#include <EEPROM.h>
+#include "ir_rx_core.h"
+#include "ir_config.h"
 
-  Board   : Arduino UNO
-  Library : IRremote v4.x
-  IR RX   : TSOP1738 / VS1838B
-  Pin     : D2
-*/
+/* ===============================
+   APPLICATION COMMAND DEFINITIONS
+   =============================== */
+#define CMD_TURN_ON   0x10
+#define CMD_TURN_OFF  0x11
+#define CMD_TOGGLE    0x12
+#define CMD_STATUS    0x13
 
-#include <Arduino.h>
-#include <IRremote.hpp>
+/* ===============================
+   PAIRING CONTROL
+   =============================== */
+#define CLEAR_PRESS_MS 10000   // long press duration
 
-/* ---------- CONFIG ---------- */
-#define IR_RECEIVE_PIN 2
-#define ONE_SPACE_THRESHOLD 1000   // >1000us = logic 1
+unsigned long buttonPressTime = 0;
+bool buttonHeld = false;
 
-/* ---------- PAIRING ---------- */
-#define MAX_PAIRED_DEVICES 5
-uint8_t pairedIds[MAX_PAIRED_DEVICES];
-uint8_t pairedCount = 0;
-
-/* ---------- CRC8 ---------- */
-uint8_t crc8(const uint8_t *data, uint8_t len) {
-  uint8_t crc = 0;
-  for (uint8_t i = 0; i < len; i++) {
-    crc ^= data[i];
-  }
-  return crc;
-}
-
-/* ---------- PAIRING HELPERS ---------- */
-bool isPaired(uint8_t id) {
-  for (uint8_t i = 0; i < pairedCount; i++) {
-    if (pairedIds[i] == id) return true;
-  }
-  return false;
-}
-
-void addPair(uint8_t id) {
-  if (!isPaired(id) && pairedCount < MAX_PAIRED_DEVICES) {
-    pairedIds[pairedCount++] = id;
+const char* commandToString(uint8_t cmd) {
+  switch (cmd) {
+    case CMD_TURN_ON:  return "TURN ON";
+    case CMD_TURN_OFF: return "TURN OFF";
+    case CMD_TOGGLE:   return "TOGGLE";
+    case CMD_STATUS:   return "STATUS";
+    default:           return "UNKNOWN";
   }
 }
 
-/* ---------- BIT DECODER ---------- */
-uint8_t decodeBit(uint16_t spaceMicros) {
-  return (spaceMicros > ONE_SPACE_THRESHOLD) ? 1 : 0;
-}
-
-/* ---------- SETUP ---------- */
+/* ===============================
+   SETUP
+   =============================== */
 void setup() {
+  pinMode(IR_RX_PIN, INPUT);
+  pinMode(PAIR_BUTTON_PIN, INPUT_PULLUP);
   Serial.begin(9600);
-  IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK);
-  Serial.println("IR-Blaster-Protocol-V2 RX Ready");
+
+  Serial.println("IR-Blaster-Protocol-V2.0 Receiver Ready");
 }
 
-/* ---------- LOOP ---------- */
+/* ===============================
+   MAIN LOOP
+   =============================== */
 void loop() {
-  if (!IrReceiver.decode()) {
+
+  /* ===============================
+     BUTTON HANDLING (PAIR / CLEAR)
+     =============================== */
+  if (digitalRead(PAIR_BUTTON_PIN) == LOW) {
+    if (!buttonHeld) {
+      buttonHeld = true;
+      buttonPressTime = millis();
+    }
+
+    // ---- Long press → Clear pairing ----
+    if (millis() - buttonPressTime >= CLEAR_PRESS_MS) {
+      EEPROM.write(EEPROM_PAIR_ADDR, 0xFF);
+      Serial.println("[PAIRING] Cleared successfully");
+      delay(1000);   // debounce
+    }
+    return;
+  } else {
+    buttonHeld = false;
+  }
+
+  /* ===============================
+     RECEIVE FRAME
+     =============================== */
+  IRFrame frame;
+  if (!irReceiveFrame(frame)) return;
+
+  /* ---- Short press → Pair sender ---- */
+  if (digitalRead(PAIR_BUTTON_PIN) == LOW) {
+    EEPROM.write(EEPROM_PAIR_ADDR, frame.senderID);
+    Serial.println("[PAIRING] Sender paired successfully");
+    delay(1000);   // debounce
     return;
   }
 
-  uint8_t bits[64];
-  uint8_t bitLen = 0;
-
-  for (uint8_t i = 3; i < IrReceiver.irparams.rawlen - 1; i += 2) {
-    bits[bitLen++] =
-      decodeBit(IrReceiver.irparams.rawbuf[i] * MICROS_PER_TICK);
-  }
-
-  // -------- FRAME FORMAT --------
-  // [ SenderID (8) | Timestamp (32) | CRC (8) ]
-
-  uint8_t senderId = 0;
-  for (int i = 0; i < 8; i++) {
-    senderId = (senderId << 1) | bits[i];
-  }
-
-  uint32_t timestamp = 0;
-  for (int i = 8; i < 40; i++) {
-    timestamp = (timestamp << 1) | bits[i];
-  }
-
-  uint8_t recvCrc = 0;
-  for (int i = 40; i < 48; i++) {
-    recvCrc = (recvCrc << 1) | bits[i];
-  }
-
-  // -------- CRC CHECK --------
-  uint8_t rawData[5];
-  rawData[0] = senderId;
-  memcpy(&rawData[1], &timestamp, 4);
-
-  if (crc8(rawData, 5) != recvCrc) {
-    Serial.println("CRC FAILED - Frame Rejected");
-    IrReceiver.resume();
+  /* ---- Authorization Check ---- */
+  if (EEPROM.read(EEPROM_PAIR_ADDR) != frame.senderID) {
+    Serial.println("[SECURITY] Frame rejected (unpaired sender)");
     return;
   }
 
-  // -------- PAIRING --------
-  if (!isPaired(senderId)) {
-    addPair(senderId);
-    Serial.print("New device paired: 0x");
-    Serial.println(senderId, HEX);
-  }
+  /* ===============================
+     METADATA DUMP
+     =============================== */
+  Serial.println("\n========== IR FRAME ==========");
 
-  // -------- ACCEPT FRAME --------
-  Serial.print("Sender ID : 0x");
-  Serial.println(senderId, HEX);
+  Serial.print("Protocol Version : 0x");
+  Serial.println(frame.version, HEX);
 
-  Serial.print("Timestamp : ");
-  Serial.println(timestamp);
+  Serial.print("Flags            : 0x");
+  Serial.println(frame.flags, HEX);
 
-  Serial.println("Frame Accepted\n");
+  Serial.print("Sender ID        : 0x");
+  Serial.println(frame.senderID, HEX);
 
-  IrReceiver.resume();
+  Serial.print("Device ID        : 0x");
+  Serial.println(frame.deviceID, HEX);
+
+  Serial.print("Command          : ");
+  Serial.print(commandToString(frame.command));
+  Serial.print(" (0x");
+  Serial.print(frame.command, HEX);
+  Serial.println(")");
+
+  Serial.print("Timestamp        : ");
+  Serial.print(frame.timestamp);
+  Serial.println(" ms");
+
+  Serial.print("CRC              : 0x");
+  Serial.println(frame.crc, HEX);
+
+  Serial.println("Status           : AUTHORIZED & VALID");
+  Serial.println("==============================");
 }
