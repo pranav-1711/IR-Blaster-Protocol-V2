@@ -13,7 +13,7 @@
 /* ===============================
    PAIRING CONTROL
    =============================== */
-#define CLEAR_PRESS_MS 10000   // long press duration
+#define CLEAR_PRESS_MS 4000   // long press duration
 
 unsigned long buttonPressTime = 0;
 bool buttonHeld = false;
@@ -45,8 +45,23 @@ void setup() {
 void loop() {
 
   /* ===============================
+    RECEIVE FRAME
+    =============================== */
+  IRFrame frame;
+  if (!irReceiveFrame(frame)) return;
+
+  /* ===============================
      BUTTON HANDLING (PAIR / CLEAR)
      =============================== */
+
+    /* ---- Short press → Pair sender ---- */
+  if (digitalRead(PAIR_BUTTON_PIN) == LOW) {
+    EEPROM.write(EEPROM_PAIR_ADDR, frame.senderID);
+    Serial.println("[PAIRING] Sender paired successfully");
+    delay(1000);   // debounce
+    // return;
+  }
+
   if (digitalRead(PAIR_BUTTON_PIN) == LOW) {
     if (!buttonHeld) {
       buttonHeld = true;
@@ -59,23 +74,8 @@ void loop() {
       Serial.println("[PAIRING] Cleared successfully");
       delay(1000);   // debounce
     }
-    return;
   } else {
     buttonHeld = false;
-  }
-
-  /* ===============================
-     RECEIVE FRAME
-     =============================== */
-  IRFrame frame;
-  if (!irReceiveFrame(frame)) return;
-
-  /* ---- Short press → Pair sender ---- */
-  if (digitalRead(PAIR_BUTTON_PIN) == LOW) {
-    EEPROM.write(EEPROM_PAIR_ADDR, frame.senderID);
-    Serial.println("[PAIRING] Sender paired successfully");
-    delay(1000);   // debounce
-    return;
   }
 
   /* ---- Authorization Check ---- */
